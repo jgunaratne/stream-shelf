@@ -1,0 +1,55 @@
+# Xcode
+#
+# gitignore contributors: checkout the wiki page for more info: https://github.com/github/gitignore/wiki/Xcode
+# Project extras
+*.xccheckout
+*.xcscmblueprint
+
+# Xcode personal settings
+xcuserdata/
+
+# Architecture-specific build artifacts
+*.xcresult
+
+# DerivedData
+DerivedData/
+
+# Swift Package Manager
+#
+# Add this line if you want to avoid checking in source code from Swift Package Manager dependencies.
+# Packages/
+# Package.resolved
+# Package.pins
+# .build/
+
+# CocoaPods
+#
+# We recommend against adding the Pods directory to your .gitignore. However
+# you should judge based on your project's needs.
+# Pods/
+# *.xcworkspace
+
+# Carthage
+#
+# Add this line if you want to avoid checking in source code from Carthage dependencies.
+# Carthage/Checkouts/
+# Carthage/Build/
+
+# AccuRev
+.accurev/
+
+# Fastlane
+#
+# It is recommended to not store the screenshots in the repo since they will
+# change often and are quite large.
+# fastlane/screenshots
+# fastlane/test_output
+
+# Bundle install
+.bundle/
+
+# macOS
+#
+#
+.DS_Store
+._*
