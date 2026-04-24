@@ -53,3 +53,7 @@ DerivedData/
 #
 .DS_Store
 ._*
+
+# AI/Project Settings
+.claude/
+.codex
