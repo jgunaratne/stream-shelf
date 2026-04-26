@@ -511,6 +511,7 @@ struct AudioPlayerView: View {
     @State private var playbackStartupTask: Task<Void, Never>?
     @State private var progressReportingTask: Task<Void, Never>?
     @State private var playbackSessionID = "StreamShelf-\(UUID().uuidString)"
+    @State private var endingItemIdentity: ObjectIdentifier?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -757,6 +758,7 @@ struct AudioPlayerView: View {
         playbackError = nil
         let playerItem = AVPlayerItem(url: url)
         playerItem.preferredForwardBufferDuration = 5
+        endingItemIdentity = ObjectIdentifier(playerItem)
         let player = AVPlayer(playerItem: playerItem)
         self.player = player
         schedulePlayback(on: player, item: playerItem)
@@ -907,6 +909,7 @@ struct AudioPlayerView: View {
         progressReportingTask = nil
         player?.pause()
         player = nil
+        endingItemIdentity = nil
         isReady = false
         isPlaying = false
     }
@@ -950,7 +953,9 @@ struct AudioPlayerView: View {
     }
 
     private func handlePlaybackEndedNotification(_ notification: Notification) {
-        guard notification.object as AnyObject? === player?.currentItem else { return }
+        guard let endedItem = notification.object as? AVPlayerItem else { return }
+        guard ObjectIdentifier(endedItem) == endingItemIdentity else { return }
+
         isPlaying = false
         progressReportingTask?.cancel()
         progressReportingTask = nil
@@ -969,6 +974,8 @@ struct AudioPlayerView: View {
 
         if canPlayNext {
             playNextTrack()
+        } else {
+            endingItemIdentity = nil
         }
     }
 
