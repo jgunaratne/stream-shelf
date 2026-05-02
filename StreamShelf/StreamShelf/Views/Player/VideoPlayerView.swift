@@ -626,16 +626,39 @@ struct AudioPlayerView: View {
             }
 
             HStack(spacing: StreamShelfTheme.Spacing.md) {
-                Button {
-                    audioPlayer.toggleShuffle()
+                Menu {
+                    Button {
+                        audioPlayer.toggleShuffle()
+                    } label: {
+                        Label(
+                            audioPlayer.isShuffleEnabled ? "Turn Shuffle Off" : "Shuffle Current Queue",
+                            systemImage: "shuffle"
+                        )
+                    }
+                    .disabled(audioPlayer.queue.count < 2)
+
+                    Button {
+                        Task { await audioPlayer.shuffleAllSongsAfterCurrent() }
+                    } label: {
+                        Label("Shuffle All Songs Next", systemImage: "music.note.list")
+                    }
+                    .disabled(audioPlayer.isExpandingToGlobalShuffle)
                 } label: {
-                    Image(systemName: "shuffle")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(audioPlayer.isShuffleEnabled ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.secondaryText)
-                        .frame(width: 40, height: 44)
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "shuffle")
+                            .font(.system(size: 24, weight: .semibold))
+
+                        if audioPlayer.isGlobalShuffleMode {
+                            Circle()
+                                .fill(StreamShelfTheme.Colors.accent)
+                                .frame(width: 7, height: 7)
+                                .offset(x: 2, y: 2)
+                        }
+                    }
+                    .foregroundStyle(audioPlayer.isShuffleEnabled ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.secondaryText)
+                    .frame(width: 40, height: 44)
                 }
-                .disabled(audioPlayer.queue.count < 2)
-                .accessibilityLabel(audioPlayer.isShuffleEnabled ? "Turn Shuffle Off" : "Turn Shuffle On")
+                .accessibilityLabel(audioPlayer.isGlobalShuffleMode ? "Global Shuffle Options" : "Shuffle Options")
 
                 Button {
                     audioPlayer.playPreviousTrack()

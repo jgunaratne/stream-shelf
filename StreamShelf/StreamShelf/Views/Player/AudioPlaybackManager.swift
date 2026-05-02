@@ -17,7 +17,9 @@ final class AudioPlaybackManager: ObservableObject {
     @Published private(set) var durationSeconds = 0.0
     @Published private(set) var playbackError: String?
     @Published var isFullPlayerPresented = false
+    @Published var isMiniPlayerHidden = false
     @Published var isLoadingGlobalShuffle = false
+    @Published var isExpandingToGlobalShuffle = false
 
     private let progressSyncIntervalNanoseconds: UInt64 = 15_000_000_000
     private let playbackStartupTimeoutNanoseconds: UInt64 = 20_000_000_000
@@ -76,6 +78,7 @@ final class AudioPlaybackManager: ObservableObject {
         currentItem = resolvedQueue[resolvedIndex]
         isShuffleEnabled = shuffle
         isGlobalShuffleMode = globalShuffle
+        isMiniPlayerHidden = false
         configurePlayOrder(startingAt: resolvedIndex, shuffle: shuffle)
         progressSeconds = 0
         durationSeconds = Double(resolvedQueue[resolvedIndex].playbackDuration ?? 0) / 1000
@@ -103,6 +106,32 @@ final class AudioPlaybackManager: ObservableObject {
             play(item: first, queue: tracks, shuffle: true, globalShuffle: true)
         } catch {
             isLoadingGlobalShuffle = false
+            playbackError = error.localizedDescription
+        }
+    }
+
+    func shuffleAllSongsAfterCurrent() async {
+        guard let currentItem, !isExpandingToGlobalShuffle else { return }
+        isExpandingToGlobalShuffle = true
+        playbackError = nil
+
+        do {
+            let tracks = try await api.fetchAllMusicTracks()
+            isExpandingToGlobalShuffle = false
+            let remaining = tracks.filter { $0.id != currentItem.id }.shuffled()
+            guard !remaining.isEmpty else {
+                playbackError = "No other songs were found in your music libraries."
+                return
+            }
+
+            queue = [currentItem] + remaining
+            currentIndex = 0
+            playOrder = Array(queue.indices)
+            playOrderPosition = 0
+            isShuffleEnabled = true
+            isGlobalShuffleMode = true
+        } catch {
+            isExpandingToGlobalShuffle = false
             playbackError = error.localizedDescription
         }
     }
@@ -173,6 +202,11 @@ final class AudioPlaybackManager: ObservableObject {
         durationSeconds = 0
         playbackError = nil
         isFullPlayerPresented = false
+        isMiniPlayerHidden = false
+    }
+
+    func hideMiniPlayer() {
+        isMiniPlayerHidden = true
     }
 
     func updatePlaybackPosition() {
