@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import SwiftUI
 
@@ -13,6 +14,7 @@ final class AudioPlaybackManager: ObservableObject {
     @Published private(set) var isGlobalShuffleMode = false
     @Published private(set) var isReady = false
     @Published private(set) var isPlaying = false
+    @Published private(set) var isBuffering = false
     @Published private(set) var progressSeconds = 0.0
     @Published private(set) var durationSeconds = 0.0
     @Published private(set) var playbackError: String?
@@ -22,14 +24,19 @@ final class AudioPlaybackManager: ObservableObject {
     @Published var isExpandingToGlobalShuffle = false
 
     private let progressSyncIntervalNanoseconds: UInt64 = 15_000_000_000
-    private let playbackStartupTimeoutNanoseconds: UInt64 = 20_000_000_000
+    private let playbackStartupTimeoutNanoseconds: UInt64 = 45_000_000_000
     private let playbackStatusPollIntervalNanoseconds: UInt64 = 250_000_000
+    private let stalledPlaybackRetryDelayNanoseconds: UInt64 = 10_000_000_000
+    private let maxRetryAttempts = 3
 
     private var player: AVPlayer?
     private var playbackStartupTask: Task<Void, Never>?
     private var progressReportingTask: Task<Void, Never>?
+    private var stallRecoveryTask: Task<Void, Never>?
+    private var notificationCancellables: Set<AnyCancellable> = []
     private var playbackSessionID = "StreamShelf-\(UUID().uuidString)"
     private var endingItemIdentity: ObjectIdentifier?
+    private var retryAttempts = 0
 
     private let api: PlexAPIClient
     private let config: PlexConfig
@@ -37,6 +44,7 @@ final class AudioPlaybackManager: ObservableObject {
     init(api: PlexAPIClient = .shared, config: PlexConfig = .shared) {
         self.api = api
         self.config = config
+        configureNotificationObservers()
     }
 
     var hasActiveItem: Bool {
@@ -83,6 +91,7 @@ final class AudioPlaybackManager: ObservableObject {
         progressSeconds = 0
         durationSeconds = Double(resolvedQueue[resolvedIndex].playbackDuration ?? 0) / 1000
         playbackSessionID = "StreamShelf-\(UUID().uuidString)"
+        retryAttempts = 0
         startPlayback(offsetMilliseconds: config.resumeOffset(for: resolvedQueue[resolvedIndex]))
         isFullPlayerPresented = true
 
@@ -141,10 +150,12 @@ final class AudioPlaybackManager: ObservableObject {
         if isPlaying {
             player.pause()
             isPlaying = false
+            isBuffering = false
             syncCurrentProgress(state: .paused)
         } else {
             player.play()
             isPlaying = true
+            isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             startProgressReporting()
         }
     }
@@ -203,6 +214,7 @@ final class AudioPlaybackManager: ObservableObject {
         playbackError = nil
         isFullPlayerPresented = false
         isMiniPlayerHidden = false
+        isBuffering = false
     }
 
     func hideMiniPlayer() {
@@ -263,7 +275,30 @@ final class AudioPlaybackManager: ObservableObject {
 
     func handlePlaybackFailedNotification(_ notification: Notification) {
         guard notification.object as AnyObject? === player?.currentItem else { return }
-        playbackError = playbackErrorMessage(for: player?.currentItem)
+        retryCurrentTrackAfterPlaybackProblem(message: playbackErrorMessage(for: player?.currentItem))
+    }
+
+    func handlePlaybackStalledNotification(_ notification: Notification) {
+        guard let stalledItem = notification.object as? AVPlayerItem else { return }
+        guard ObjectIdentifier(stalledItem) == endingItemIdentity else { return }
+        guard player?.currentItem === stalledItem else { return }
+
+        isBuffering = true
+        player?.play()
+
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: stalledPlaybackRetryDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard ObjectIdentifier(stalledItem) == self.endingItemIdentity else { return }
+            guard self.player?.currentItem === stalledItem else { return }
+
+            if self.player?.timeControlStatus == .waitingToPlayAtSpecifiedRate || self.player?.rate == 0 {
+                self.retryCurrentTrackAfterPlaybackProblem(
+                    message: "Playback is buffering because the connection is slow."
+                )
+            }
+        }
     }
 
     func timeLabel(_ seconds: Double) -> String {
@@ -291,9 +326,38 @@ final class AudioPlaybackManager: ObservableObject {
         }
     }
 
-    private func startPlayback(offsetMilliseconds: Int?) {
+    private func configureNotificationObservers() {
+        NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
+            .sink { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handlePlaybackEndedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)
+            .sink { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handlePlaybackFailedNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+
+        NotificationCenter.default.publisher(for: .AVPlayerItemPlaybackStalled)
+            .sink { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handlePlaybackStalledNotification(notification)
+                }
+            }
+            .store(in: &notificationCancellables)
+    }
+
+    private func startPlayback(offsetMilliseconds: Int?, resetRetryAttempts: Bool = true) {
         guard let currentItem else { return }
         configureAudioSession()
+        if resetRetryAttempts {
+            retryAttempts = 0
+        }
 
         guard let url = config.playbackURL(
             for: currentItem.metadataKey,
@@ -306,10 +370,13 @@ final class AudioPlaybackManager: ObservableObject {
         }
 
         playbackError = nil
+        isBuffering = false
         let playerItem = AVPlayerItem(url: url)
-        playerItem.preferredForwardBufferDuration = 5
+        playerItem.preferredForwardBufferDuration = 15
+        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         endingItemIdentity = ObjectIdentifier(playerItem)
         let player = AVPlayer(playerItem: playerItem)
+        player.automaticallyWaitsToMinimizeStalling = true
         self.player = player
         schedulePlayback(on: player, item: playerItem)
     }
@@ -322,8 +389,10 @@ final class AudioPlaybackManager: ObservableObject {
     private func schedulePlayback(on player: AVPlayer, item: AVPlayerItem) {
         isReady = false
         isPlaying = false
+        isBuffering = true
         playbackStartupTask?.cancel()
         progressReportingTask?.cancel()
+        stallRecoveryTask?.cancel()
 
         playbackStartupTask = Task { @MainActor in
             var elapsedNanoseconds: UInt64 = 0
@@ -335,6 +404,7 @@ final class AudioPlaybackManager: ObservableObject {
                 case .readyToPlay:
                     self.playbackStartupTask = nil
                     self.isReady = true
+                    self.isBuffering = false
                     self.durationSeconds = self.resolvedDurationSeconds(for: item)
                     player.play()
                     self.isPlaying = true
@@ -342,7 +412,7 @@ final class AudioPlaybackManager: ObservableObject {
                     return
                 case .failed:
                     self.playbackStartupTask = nil
-                    self.playbackError = self.playbackErrorMessage(for: item)
+                    self.retryCurrentTrackAfterPlaybackProblem(message: self.playbackErrorMessage(for: item))
                     return
                 case .unknown:
                     break
@@ -352,7 +422,9 @@ final class AudioPlaybackManager: ObservableObject {
 
                 if elapsedNanoseconds >= self.playbackStartupTimeoutNanoseconds {
                     self.playbackStartupTask = nil
-                    self.playbackError = "Playback did not start. Check that your Plex remote URL is reachable and that remote streaming is allowed on the server."
+                    self.retryCurrentTrackAfterPlaybackProblem(
+                        message: "Playback did not start. Check that your Plex remote URL is reachable and that remote streaming is allowed on the server."
+                    )
                     return
                 }
 
@@ -381,6 +453,7 @@ final class AudioPlaybackManager: ObservableObject {
         progressSeconds = 0
         durationSeconds = Double(queue[index].playbackDuration ?? 0) / 1000
         playbackSessionID = "StreamShelf-\(UUID().uuidString)"
+        retryAttempts = 0
         startPlayback(offsetMilliseconds: config.resumeOffset(for: queue[index]))
 
         Task { @MainActor in
@@ -397,11 +470,14 @@ final class AudioPlaybackManager: ObservableObject {
         playbackStartupTask = nil
         progressReportingTask?.cancel()
         progressReportingTask = nil
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
         player?.pause()
         player = nil
         endingItemIdentity = nil
         isReady = false
         isPlaying = false
+        isBuffering = false
     }
 
     private func resolvedDurationSeconds(for item: AVPlayerItem) -> Double {
@@ -440,6 +516,36 @@ final class AudioPlaybackManager: ObservableObject {
         }
 
         return "Playback failed. Check that the Plex remote URL is reachable and that remote streaming is allowed on the server."
+    }
+
+    private func retryCurrentTrackAfterPlaybackProblem(message: String) {
+        guard currentItem != nil else { return }
+
+        if retryAttempts < maxRetryAttempts {
+            retryAttempts += 1
+            let offsetMilliseconds = currentOffsetMilliseconds()
+            stopPlayback(reportProgress: false)
+            playbackError = nil
+            isBuffering = true
+            startPlayback(offsetMilliseconds: offsetMilliseconds, resetRetryAttempts: false)
+            return
+        }
+
+        isBuffering = false
+        if canPlayNext {
+            playNextTrack()
+        } else {
+            playbackError = message
+        }
+    }
+
+    private func currentOffsetMilliseconds() -> Int? {
+        if let seconds = player?.currentTime().seconds, seconds.isFinite, seconds > 0 {
+            return Int(seconds * 1000)
+        }
+
+        guard progressSeconds.isFinite, progressSeconds > 0 else { return nil }
+        return Int(progressSeconds * 1000)
     }
 
     private func startProgressReporting() {

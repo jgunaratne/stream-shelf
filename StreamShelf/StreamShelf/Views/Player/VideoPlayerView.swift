@@ -532,12 +532,6 @@ struct AudioPlayerView: View {
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             audioPlayer.updatePlaybackPosition()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
-            audioPlayer.handlePlaybackEndedNotification(notification)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
-            audioPlayer.handlePlaybackFailedNotification(notification)
-        }
     }
 
     private var header: some View {

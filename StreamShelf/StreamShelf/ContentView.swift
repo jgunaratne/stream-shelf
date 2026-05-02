@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 
 struct ContentView: View {
     @EnvironmentObject private var config: PlexConfig
@@ -45,12 +44,6 @@ struct ContentView: View {
             }
             .onChange(of: scenePhase) { _, newPhase in
                 audioPlayer.handleScenePhaseChange(newPhase)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
-                audioPlayer.handlePlaybackEndedNotification(notification)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
-                audioPlayer.handlePlaybackFailedNotification(notification)
             }
         } else {
             setupScreen
