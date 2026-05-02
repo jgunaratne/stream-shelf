@@ -1,7 +1,10 @@
 import SwiftUI
+import AVFoundation
 
 struct ContentView: View {
     @EnvironmentObject private var config: PlexConfig
+    @EnvironmentObject private var audioPlayer: AudioPlaybackManager
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
 
     var body: some View {
@@ -29,6 +32,26 @@ struct ContentView: View {
             }
             .tint(StreamShelfTheme.Colors.accent)
             .background(StreamShelfTheme.Colors.appBackground)
+            .safeAreaInset(edge: .bottom) {
+                MiniPlayerView()
+            }
+            .fullScreenCover(isPresented: $audioPlayer.isFullPlayerPresented) {
+                if let item = audioPlayer.currentItem {
+                    AudioPlayerView(item: item, queue: audioPlayer.queue)
+                }
+            }
+            .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                audioPlayer.updatePlaybackPosition()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                audioPlayer.handleScenePhaseChange(newPhase)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
+                audioPlayer.handlePlaybackEndedNotification(notification)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
+                audioPlayer.handlePlaybackFailedNotification(notification)
+            }
         } else {
             setupScreen
         }

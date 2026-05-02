@@ -467,7 +467,7 @@ struct VideoPlayerView: View {
     }
 }
 
-private struct PlaybackProgressSnapshot {
+struct PlaybackProgressSnapshot {
     let offsetMilliseconds: Int
     let durationMilliseconds: Int?
 }
@@ -493,42 +493,13 @@ struct AudioPlayerView: View {
     let item: PlexMovie
     let queue: [PlexMovie]
 
-    private let progressSyncIntervalNanoseconds: UInt64 = 15_000_000_000
-    private let playbackStartupTimeoutNanoseconds: UInt64 = 20_000_000_000
-    private let playbackStatusPollIntervalNanoseconds: UInt64 = 250_000_000
-
-    @State private var player: AVPlayer?
-    @State private var currentIndex: Int
-    @State private var playOrder: [Int]
-    @State private var playOrderPosition: Int
-    @State private var isShuffleEnabled = false
-    @State private var playbackMetadata: PlexMovie
-    @State private var isReady = false
-    @State private var isPlaying = false
-    @State private var progressSeconds = 0.0
-    @State private var durationSeconds = 0.0
-    @State private var playbackError: String?
-    @State private var playbackStartupTask: Task<Void, Never>?
-    @State private var progressReportingTask: Task<Void, Never>?
-    @State private var playbackSessionID = "StreamShelf-\(UUID().uuidString)"
-    @State private var endingItemIdentity: ObjectIdentifier?
-
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var config: PlexConfig
-
-    private let api = PlexAPIClient.shared
+    @EnvironmentObject private var audioPlayer: AudioPlaybackManager
 
     init(item: PlexMovie, queue: [PlexMovie] = []) {
-        let resolvedQueue = Self.normalizedQueue(item: item, queue: queue)
-        let resolvedIndex = resolvedQueue.firstIndex(where: { $0.id == item.id }) ?? 0
-
         self.item = item
-        self.queue = resolvedQueue
-        _currentIndex = State(initialValue: resolvedIndex)
-        _playOrder = State(initialValue: Array(resolvedQueue.indices))
-        _playOrderPosition = State(initialValue: resolvedIndex)
-        _playbackMetadata = State(initialValue: resolvedQueue[resolvedIndex])
+        self.queue = queue
     }
 
     var body: some View {
@@ -540,7 +511,7 @@ struct AudioPlayerView: View {
                 artwork
                 trackInfo
 
-                if let playbackError {
+                if let playbackError = audioPlayer.playbackError {
                     Label(playbackError, systemImage: "exclamationmark.triangle")
                         .font(.subheadline)
                         .foregroundStyle(StreamShelfTheme.Colors.warning)
@@ -556,28 +527,23 @@ struct AudioPlayerView: View {
         }
         .preferredColorScheme(.dark)
         .task {
-            await preparePlaybackIfNeeded()
+            audioPlayer.play(item: item, queue: queue)
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            updatePlaybackPosition()
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            handleScenePhaseChange(newPhase)
+            audioPlayer.updatePlaybackPosition()
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
-            handlePlaybackEndedNotification(notification)
+            audioPlayer.handlePlaybackEndedNotification(notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
-            guard notification.object as AnyObject? === player?.currentItem else { return }
-            playbackError = playbackErrorMessage(for: player?.currentItem)
+            audioPlayer.handlePlaybackFailedNotification(notification)
         }
-        .onDisappear(perform: stopPlayback)
     }
 
     private var header: some View {
         HStack {
             Button {
-                stopPlayback()
+                audioPlayer.isFullPlayerPresented = false
                 dismiss()
             } label: {
                 Image(systemName: "xmark.circle.fill")
@@ -601,7 +567,7 @@ struct AudioPlayerView: View {
 
     private var artwork: some View {
         PosterView(
-            url: config.imageURL(for: playbackMetadata.artworkPath, width: 600, height: 600),
+            url: config.imageURL(for: audioPlayer.currentItem?.artworkPath, width: 600, height: 600),
             width: min(UIScreen.main.bounds.width - 80, 320),
             height: min(UIScreen.main.bounds.width - 80, 320),
             cornerRadius: 12
@@ -615,13 +581,13 @@ struct AudioPlayerView: View {
 
     private var trackInfo: some View {
         VStack(spacing: StreamShelfTheme.Spacing.xs) {
-            Text(playbackMetadata.title)
+            Text(audioPlayer.currentItem?.title ?? item.title)
                 .font(.title2.weight(.bold))
                 .foregroundStyle(StreamShelfTheme.Colors.primaryText)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
 
-            if let subtitle = playbackMetadata.browseSubtitle, !subtitle.isEmpty {
+            if let subtitle = audioPlayer.currentItem?.browseSubtitle, !subtitle.isEmpty {
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(StreamShelfTheme.Colors.secondaryText)
@@ -629,8 +595,8 @@ struct AudioPlayerView: View {
                     .lineLimit(2)
             }
 
-            if queue.count > 1 {
-                Text("\(currentIndex + 1) of \(queue.count)")
+            if audioPlayer.queue.count > 1 {
+                Text("\(audioPlayer.currentIndex + 1) of \(audioPlayer.queue.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(StreamShelfTheme.Colors.tertiaryText)
             }
@@ -642,18 +608,18 @@ struct AudioPlayerView: View {
             VStack(spacing: StreamShelfTheme.Spacing.xs) {
                 Slider(
                     value: Binding(
-                        get: { progressSeconds },
-                        set: { seek(to: $0) }
+                        get: { audioPlayer.progressSeconds },
+                        set: { audioPlayer.seek(to: $0) }
                     ),
-                    in: 0...max(durationSeconds, 1)
+                    in: 0...max(audioPlayer.durationSeconds, 1)
                 )
                 .tint(StreamShelfTheme.Colors.accent)
-                .disabled(!isReady)
+                .disabled(!audioPlayer.isReady)
 
                 HStack {
-                    Text(timeLabel(progressSeconds))
+                    Text(audioPlayer.timeLabel(audioPlayer.progressSeconds))
                     Spacer()
-                    Text(timeLabel(durationSeconds))
+                    Text(audioPlayer.timeLabel(audioPlayer.durationSeconds))
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(StreamShelfTheme.Colors.secondaryText)
@@ -661,419 +627,49 @@ struct AudioPlayerView: View {
 
             HStack(spacing: StreamShelfTheme.Spacing.md) {
                 Button {
-                    toggleShuffle()
+                    audioPlayer.toggleShuffle()
                 } label: {
                     Image(systemName: "shuffle")
                         .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(isShuffleEnabled ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.secondaryText)
+                        .foregroundStyle(audioPlayer.isShuffleEnabled ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.secondaryText)
                         .frame(width: 40, height: 44)
                 }
-                .disabled(queue.count < 2)
-                .accessibilityLabel(isShuffleEnabled ? "Turn Shuffle Off" : "Turn Shuffle On")
+                .disabled(audioPlayer.queue.count < 2)
+                .accessibilityLabel(audioPlayer.isShuffleEnabled ? "Turn Shuffle Off" : "Turn Shuffle On")
 
                 Button {
-                    playPreviousTrack()
+                    audioPlayer.playPreviousTrack()
                 } label: {
                     Image(systemName: "backward.end.fill")
                         .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(canPlayPrevious ? StreamShelfTheme.Colors.primaryText : StreamShelfTheme.Colors.tertiaryText)
+                        .foregroundStyle(audioPlayer.canPlayPrevious ? StreamShelfTheme.Colors.primaryText : StreamShelfTheme.Colors.tertiaryText)
                         .frame(width: 40, height: 44)
                 }
-                .disabled(!canPlayPrevious)
+                .disabled(!audioPlayer.canPlayPrevious)
                 .accessibilityLabel("Previous Track")
 
                 Button {
-                    togglePlayback()
+                    audioPlayer.togglePlayback()
                 } label: {
-                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 64))
-                        .foregroundStyle(isReady ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.tertiaryText)
+                        .foregroundStyle(audioPlayer.isReady ? StreamShelfTheme.Colors.accent : StreamShelfTheme.Colors.tertiaryText)
                 }
-                .disabled(!isReady)
-                .accessibilityLabel(isPlaying ? "Pause" : "Play")
+                .disabled(!audioPlayer.isReady)
+                .accessibilityLabel(audioPlayer.isPlaying ? "Pause" : "Play")
 
                 Button {
-                    playNextTrack()
+                    audioPlayer.playNextTrack()
                 } label: {
                     Image(systemName: "forward.end.fill")
                         .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(canPlayNext ? StreamShelfTheme.Colors.primaryText : StreamShelfTheme.Colors.tertiaryText)
+                        .foregroundStyle(audioPlayer.canPlayNext ? StreamShelfTheme.Colors.primaryText : StreamShelfTheme.Colors.tertiaryText)
                         .frame(width: 40, height: 44)
                 }
-                .disabled(!canPlayNext)
+                .disabled(!audioPlayer.canPlayNext)
                 .accessibilityLabel("Next Track")
             }
         }
-    }
-
-    private var canPlayNext: Bool {
-        guard queue.count > 1 else { return false }
-        if isShuffleEnabled {
-            return playOrderPosition < playOrder.count - 1
-        }
-        return currentIndex < queue.count - 1
-    }
-
-    private var canPlayPrevious: Bool {
-        if progressSeconds > 3 {
-            return true
-        }
-
-        guard queue.count > 1 else { return false }
-        if isShuffleEnabled {
-            return playOrderPosition > 0
-        }
-        return currentIndex > 0
-    }
-
-    @MainActor
-    private func preparePlaybackIfNeeded() async {
-        guard player == nil, playbackError == nil else { return }
-        startPlayback(offsetMilliseconds: config.resumeOffset(for: playbackMetadata))
-
-        do {
-            let ratingKey = playbackMetadata.ratingKey
-            if let detail = try await api.fetchMovieDetail(ratingKey: ratingKey), playbackMetadata.ratingKey == ratingKey {
-                playbackMetadata = detail
-            }
-        } catch {
-            // Audio can still start with the metadata returned by the library listing.
-        }
-    }
-
-    @MainActor
-    private func startPlayback(offsetMilliseconds: Int?) {
-        configureAudioSession()
-
-        guard let url = config.playbackURL(
-            for: playbackMetadata.metadataKey,
-            offset: offsetMilliseconds,
-            sessionIdentifier: playbackSessionID,
-            mediaKind: .audio
-        ) else {
-            playbackError = "Stream URL unavailable"
-            return
-        }
-
-        playbackError = nil
-        let playerItem = AVPlayerItem(url: url)
-        playerItem.preferredForwardBufferDuration = 5
-        endingItemIdentity = ObjectIdentifier(playerItem)
-        let player = AVPlayer(playerItem: playerItem)
-        self.player = player
-        schedulePlayback(on: player, item: playerItem)
-    }
-
-    private func configureAudioSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
-    }
-
-    private func schedulePlayback(on player: AVPlayer, item: AVPlayerItem) {
-        isReady = false
-        isPlaying = false
-        playbackStartupTask?.cancel()
-        progressReportingTask?.cancel()
-
-        playbackStartupTask = Task { @MainActor in
-            var elapsedNanoseconds: UInt64 = 0
-
-            while !Task.isCancelled {
-                guard self.player === player, player.currentItem === item else { return }
-
-                switch item.status {
-                case .readyToPlay:
-                    self.playbackStartupTask = nil
-                    self.isReady = true
-                    self.durationSeconds = self.resolvedDurationSeconds(for: item)
-                    player.play()
-                    self.isPlaying = true
-                    self.startProgressReporting()
-                    return
-                case .failed:
-                    self.playbackStartupTask = nil
-                    self.playbackError = self.playbackErrorMessage(for: item)
-                    return
-                case .unknown:
-                    break
-                @unknown default:
-                    break
-                }
-
-                if elapsedNanoseconds >= self.playbackStartupTimeoutNanoseconds {
-                    self.playbackStartupTask = nil
-                    self.playbackError = "Playback did not start. Check that your Plex remote URL is reachable and that remote streaming is allowed on the server."
-                    return
-                }
-
-                try? await Task.sleep(nanoseconds: self.playbackStatusPollIntervalNanoseconds)
-                elapsedNanoseconds += self.playbackStatusPollIntervalNanoseconds
-            }
-        }
-    }
-
-    private func togglePlayback() {
-        guard let player else { return }
-        if isPlaying {
-            player.pause()
-            isPlaying = false
-            syncCurrentProgress(state: .paused)
-        } else {
-            player.play()
-            isPlaying = true
-            startProgressReporting()
-        }
-    }
-
-    private func toggleShuffle() {
-        guard queue.count > 1 else { return }
-        isShuffleEnabled.toggle()
-
-        if isShuffleEnabled {
-            let remaining = queue.indices.filter { $0 != currentIndex }.shuffled()
-            playOrder = [currentIndex] + remaining
-            playOrderPosition = 0
-        } else {
-            playOrder = Array(queue.indices)
-            playOrderPosition = currentIndex
-        }
-    }
-
-    private func playNextTrack() {
-        guard canPlayNext else { return }
-
-        if isShuffleEnabled {
-            moveToTrack(at: playOrderPosition + 1)
-        } else {
-            moveToQueueIndex(currentIndex + 1)
-        }
-    }
-
-    private func playPreviousTrack() {
-        if progressSeconds > 3 {
-            seek(to: 0)
-            return
-        }
-
-        guard canPlayPrevious else { return }
-
-        if isShuffleEnabled {
-            moveToTrack(at: playOrderPosition - 1)
-        } else {
-            moveToQueueIndex(currentIndex - 1)
-        }
-    }
-
-    private func moveToTrack(at orderPosition: Int) {
-        guard playOrder.indices.contains(orderPosition) else { return }
-        playOrderPosition = orderPosition
-        moveToQueueIndex(playOrder[orderPosition], updatePlayOrderPosition: false)
-    }
-
-    private func moveToQueueIndex(_ index: Int, updatePlayOrderPosition: Bool = true) {
-        guard queue.indices.contains(index) else { return }
-
-        syncCurrentProgress(state: .stopped)
-        currentIndex = index
-        if updatePlayOrderPosition {
-            playOrderPosition = playOrder.firstIndex(of: index) ?? index
-        }
-        playbackMetadata = queue[index]
-        progressSeconds = 0
-        durationSeconds = Double(queue[index].playbackDuration ?? 0) / 1000
-        playbackSessionID = "StreamShelf-\(UUID().uuidString)"
-        startPlayback(offsetMilliseconds: config.resumeOffset(for: queue[index]))
-
-        Task { @MainActor in
-            await loadCurrentTrackMetadataIfNeeded()
-        }
-    }
-
-    private func seek(to seconds: Double) {
-        progressSeconds = seconds
-        player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) { _ in
-            Task { @MainActor in
-                syncCurrentProgress(state: isPlaying ? .playing : .paused)
-            }
-        }
-    }
-
-    private func stopPlayback() {
-        if let snapshot = currentProgressSnapshot() {
-            persistAndReportProgress(snapshot, state: .stopped)
-        }
-
-        playbackStartupTask?.cancel()
-        playbackStartupTask = nil
-        progressReportingTask?.cancel()
-        progressReportingTask = nil
-        player?.pause()
-        player = nil
-        endingItemIdentity = nil
-        isReady = false
-        isPlaying = false
-    }
-
-    private func updatePlaybackPosition() {
-        guard let player else { return }
-        let seconds = player.currentTime().seconds
-        if seconds.isFinite, seconds >= 0 {
-            progressSeconds = seconds
-        }
-
-        if let item = player.currentItem {
-            durationSeconds = resolvedDurationSeconds(for: item)
-        }
-    }
-
-    private func resolvedDurationSeconds(for item: AVPlayerItem) -> Double {
-        let itemDuration = item.duration.seconds
-        if itemDuration.isFinite, itemDuration > 0 {
-            return itemDuration
-        }
-
-        if let duration = playbackMetadata.playbackDuration, duration > 0 {
-            return Double(duration) / 1000
-        }
-
-        return max(durationSeconds, 1)
-    }
-
-    private func handleScenePhaseChange(_ newPhase: ScenePhase) {
-        guard player != nil else { return }
-
-        switch newPhase {
-        case .inactive, .background:
-            syncCurrentProgress(state: .paused)
-        case .active:
-            break
-        @unknown default:
-            break
-        }
-    }
-
-    private func handlePlaybackEndedNotification(_ notification: Notification) {
-        guard let endedItem = notification.object as? AVPlayerItem else { return }
-        guard ObjectIdentifier(endedItem) == endingItemIdentity else { return }
-
-        isPlaying = false
-        progressReportingTask?.cancel()
-        progressReportingTask = nil
-
-        if let durationMilliseconds = playbackMetadata.playbackDuration {
-            persistAndReportProgress(
-                PlaybackProgressSnapshot(
-                    offsetMilliseconds: durationMilliseconds,
-                    durationMilliseconds: durationMilliseconds
-                ),
-                state: .stopped
-            )
-        } else {
-            syncCurrentProgress(state: .stopped)
-        }
-
-        if canPlayNext {
-            playNextTrack()
-        } else {
-            endingItemIdentity = nil
-        }
-    }
-
-    @MainActor
-    private func loadCurrentTrackMetadataIfNeeded() async {
-        do {
-            if let detail = try await api.fetchMovieDetail(ratingKey: playbackMetadata.ratingKey) {
-                guard queue.indices.contains(currentIndex), detail.ratingKey == queue[currentIndex].ratingKey else { return }
-                playbackMetadata = detail
-            }
-        } catch {
-            // The queued track can still play with the metadata already loaded in the album listing.
-        }
-    }
-
-    private func playbackErrorMessage(for item: AVPlayerItem?) -> String {
-        let detail = item?.error?.localizedDescription
-            ?? item?.errorLog()?.events.last?.errorComment
-            ?? item?.errorLog()?.events.last?.uri
-
-        if let detail, !detail.isEmpty {
-            return "Playback failed: \(detail)"
-        }
-
-        return "Playback failed. Check that the Plex remote URL is reachable and that remote streaming is allowed on the server."
-    }
-
-    private func startProgressReporting() {
-        progressReportingTask?.cancel()
-        progressReportingTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: progressSyncIntervalNanoseconds)
-                guard !Task.isCancelled else { return }
-
-                await MainActor.run {
-                    syncCurrentProgress(state: isPlaying ? .playing : .paused)
-                }
-            }
-        }
-    }
-
-    private func syncCurrentProgress(state: PlexPlaybackState) {
-        guard let snapshot = currentProgressSnapshot() else { return }
-        persistAndReportProgress(snapshot, state: state)
-    }
-
-    private func currentProgressSnapshot() -> PlaybackProgressSnapshot? {
-        guard progressSeconds.isFinite, progressSeconds > 0 else { return nil }
-        return PlaybackProgressSnapshot(
-            offsetMilliseconds: Int(progressSeconds * 1000),
-            durationMilliseconds: playbackMetadata.playbackDuration
-        )
-    }
-
-    private func persistAndReportProgress(_ snapshot: PlaybackProgressSnapshot, state: PlexPlaybackState) {
-        config.savePlaybackProgress(
-            for: playbackMetadata,
-            offsetMilliseconds: snapshot.offsetMilliseconds,
-            durationMilliseconds: snapshot.durationMilliseconds
-        )
-
-        let item = playbackMetadata
-        let sessionIdentifier = playbackSessionID
-
-        Task {
-            try? await api.reportTimeline(
-                for: item,
-                offsetMilliseconds: snapshot.offsetMilliseconds,
-                durationMilliseconds: snapshot.durationMilliseconds,
-                state: state,
-                sessionIdentifier: sessionIdentifier
-            )
-        }
-    }
-
-    private func timeLabel(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else { return "0:00" }
-        let total = Int(seconds)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let remainingSeconds = total % 60
-
-        if hours > 0 {
-            return "\(hours):\(String(format: "%02d", minutes)):\(String(format: "%02d", remainingSeconds))"
-        }
-
-        return "\(minutes):\(String(format: "%02d", remainingSeconds))"
-    }
-
-    private static func normalizedQueue(item: PlexMovie, queue: [PlexMovie]) -> [PlexMovie] {
-        var resolved: [PlexMovie] = []
-
-        for candidate in queue.filter(\.isTrack) + [item] {
-            guard !resolved.contains(where: { $0.id == candidate.id }) else { continue }
-            resolved.append(candidate)
-        }
-
-        return resolved.isEmpty ? [item] : resolved
     }
 }
 

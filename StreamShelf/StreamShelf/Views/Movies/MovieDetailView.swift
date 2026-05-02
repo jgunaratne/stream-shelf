@@ -4,6 +4,7 @@ struct MovieDetailView: View {
     @StateObject private var vm: MovieDetailViewModel
     @State private var playbackSelection: PlaybackSelection?
     @EnvironmentObject private var config: PlexConfig
+    @EnvironmentObject private var audioPlayer: AudioPlaybackManager
 
     init(movie: PlexMovie) {
         _vm = StateObject(wrappedValue: MovieDetailViewModel(movie: movie))
@@ -261,7 +262,7 @@ struct MovieDetailView: View {
         VStack(alignment: .leading, spacing: StreamShelfTheme.Spacing.sm) {
             Button {
                 if let item = vm.primaryPlaybackItem {
-                    playbackSelection = playbackSelection(for: item)
+                    play(item)
                 }
             } label: {
                 HStack(spacing: StreamShelfTheme.Spacing.sm) {
@@ -345,7 +346,7 @@ struct MovieDetailView: View {
                 VStack(spacing: StreamShelfTheme.Spacing.sm) {
                     ForEach(vm.tracks) { track in
                         Button {
-                            playbackSelection = playbackSelection(for: track)
+                            play(track)
                         } label: {
                             MusicItemRow(item: track, accessorySystemImage: track.hasProgress ? "play.fill" : "play.circle")
                         }
@@ -378,18 +379,16 @@ struct MovieDetailView: View {
     @ViewBuilder
     private func playbackScreen(for selection: PlaybackSelection) -> some View {
         switch selection.kind {
-        case .audio(let item, queue: let queue):
-            AudioPlayerView(item: item, queue: queue)
         case .video(let item):
             VideoPlayerView(item: item, title: item.playbackTitle)
         }
     }
 
-    private func playbackSelection(for item: PlexMovie) -> PlaybackSelection {
+    private func play(_ item: PlexMovie) {
         if item.isTrack {
-            return .audio(item, queue: audioQueue(containing: item))
+            audioPlayer.play(item: item, queue: audioQueue(containing: item))
         } else {
-            return .video(item)
+            playbackSelection = .video(item)
         }
     }
 
@@ -437,16 +436,11 @@ struct MovieDetailView: View {
 
 private struct PlaybackSelection: Identifiable {
     enum Kind {
-        case audio(PlexMovie, queue: [PlexMovie])
         case video(PlexMovie)
     }
 
     let id = UUID()
     let kind: Kind
-
-    static func audio(_ item: PlexMovie, queue: [PlexMovie]) -> PlaybackSelection {
-        PlaybackSelection(kind: .audio(item, queue: queue))
-    }
 
     static func video(_ item: PlexMovie) -> PlaybackSelection {
         PlaybackSelection(kind: .video(item))

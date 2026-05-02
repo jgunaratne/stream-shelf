@@ -359,11 +359,17 @@ struct PlexMoviesResponse: Decodable {
 struct PlexMoviesContainer: Decodable {
     let metadata: [PlexMovie]?
     let size: Int?
+    let totalSize: Int?
 
     enum CodingKeys: String, CodingKey {
         case metadata = "Metadata"
-        case size
+        case size, totalSize
     }
+}
+
+struct LibraryItemsPage {
+    let items: [PlexMovie]
+    let totalSize: Int
 }
 
 // MARK: - Movie Detail

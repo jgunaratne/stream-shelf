@@ -159,6 +159,41 @@ final class PlexAPIClient {
         return (container.mediaContainer.metadata ?? []).filter(\.isSupportedMediaType)
     }
 
+    func fetchAllMusicTracks(connection: PlexConnection? = nil) async throws -> [PlexMovie] {
+        let sections = try await fetchLibrarySections(connection: connection).filter(\.isMusicSection)
+        var tracks: [PlexMovie] = []
+        var seenIDs: Set<String> = []
+
+        for section in sections {
+            var start = 0
+            let pageSize = 500
+
+            while true {
+                let page = try await fetchLibraryItemsPage(
+                    sectionKey: section.key,
+                    sectionType: section.type,
+                    musicBrowseMode: .tracks,
+                    start: start,
+                    size: pageSize,
+                    connection: connection
+                )
+                let sectionTracks = filteredLibraryItems(page.items, sectionType: section.type, musicBrowseMode: .tracks)
+
+                for track in sectionTracks where !seenIDs.contains(track.id) {
+                    seenIDs.insert(track.id)
+                    tracks.append(track)
+                }
+
+                start += pageSize
+                if page.items.count < pageSize || (page.totalSize > 0 && start >= page.totalSize) {
+                    break
+                }
+            }
+        }
+
+        return tracks
+    }
+
     func reportTimeline(
         for item: PlexMovie,
         offsetMilliseconds: Int,
@@ -213,6 +248,62 @@ final class PlexAPIClient {
         default:
             return nil
         }
+    }
+
+    private func filteredLibraryItems(
+        _ items: [PlexMovie],
+        sectionType: String,
+        musicBrowseMode: MusicLibraryBrowseMode
+    ) -> [PlexMovie] {
+        switch sectionType {
+        case "artist", "music":
+            switch musicBrowseMode {
+            case .artists:
+                return items.filter(\.isArtist)
+            case .albums:
+                return items.filter(\.isAlbum)
+            case .tracks:
+                return items.filter(\.isTrack)
+            }
+        case "show":
+            return items.filter(\.isShow)
+        case "movie":
+            return items.filter(\.isMovie)
+        default:
+            return items.filter(\.isSupportedVideoType)
+        }
+    }
+
+    private func fetchLibraryItemsPage(
+        sectionKey: String,
+        sectionType: String,
+        musicBrowseMode: MusicLibraryBrowseMode,
+        start: Int,
+        size: Int,
+        connection: PlexConnection? = nil
+    ) async throws -> LibraryItemsPage {
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "X-Plex-Container-Start", value: String(start)),
+            URLQueryItem(name: "X-Plex-Container-Size", value: String(size))
+        ]
+
+        if Self.isMusicSectionType(sectionType) {
+            queryItems.append(URLQueryItem(name: "type", value: musicBrowseMode.plexType))
+        } else if let type = Self.libraryContentType(for: sectionType) {
+            queryItems.append(URLQueryItem(name: "type", value: type))
+        }
+
+        let url = try buildURL(
+            path: "/library/sections/\(sectionKey)/all",
+            additionalQueryItems: queryItems,
+            includeContainerLimits: false,
+            connection: connection
+        )
+        let container: PlexMoviesResponse = try await fetch(url: url)
+        return LibraryItemsPage(
+            items: container.mediaContainer.metadata ?? [],
+            totalSize: container.mediaContainer.totalSize ?? container.mediaContainer.size ?? 0
+        )
     }
 
     private func buildURL(

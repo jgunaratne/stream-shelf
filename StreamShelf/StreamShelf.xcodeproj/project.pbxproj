@@ -35,6 +35,8 @@
 		AA000026 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AB000027 /* PrivacyInfo.xcprivacy */; };
 		AA000027 /* GenresViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB000028 /* GenresViewModel.swift */; };
 		AA000028 /* GenresView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB000029 /* GenresView.swift */; };
+		AA000029 /* AudioPlaybackManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB000030 /* AudioPlaybackManager.swift */; };
+		AA000030 /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB000031 /* MiniPlayerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +70,8 @@
 		AB000027 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AB000028 /* GenresViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenresViewModel.swift; sourceTree = "<group>"; };
 		AB000029 /* GenresView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenresView.swift; sourceTree = "<group>"; };
+		AB000030 /* AudioPlaybackManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlaybackManager.swift; sourceTree = "<group>"; };
+		AB000031 /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -230,6 +234,8 @@
 		AAGRP0054 /* Player */ = {
 			isa = PBXGroup;
 			children = (
+				AB000030 /* AudioPlaybackManager.swift */,
+				AB000031 /* MiniPlayerView.swift */,
 				AB000015 /* VideoPlayerView.swift */,
 			);
 			path = Player;
@@ -357,6 +363,8 @@
 				AA000025 /* PosterView.swift in Sources */,
 				AA000027 /* GenresViewModel.swift in Sources */,
 				AA000028 /* GenresView.swift in Sources */,
+				AA000029 /* AudioPlaybackManager.swift in Sources */,
+				AA000030 /* MiniPlayerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

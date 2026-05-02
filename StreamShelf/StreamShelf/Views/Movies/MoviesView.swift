@@ -10,6 +10,7 @@ struct MoviesView: View {
     @StateObject private var vm: MoviesViewModel
     @State private var searchText = ""
     @State private var layout: Layout = .grid
+    @EnvironmentObject private var audioPlayer: AudioPlaybackManager
 
     enum Layout { case grid, list }
 
@@ -117,6 +118,18 @@ struct MoviesView: View {
         .background(StreamShelfTheme.Colors.appBackground.ignoresSafeArea())
         .toolbarBackground(StreamShelfTheme.Colors.appBackground, for: .navigationBar)
         .toolbar {
+            if vm.isMusicLibrary {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Task { await audioPlayer.playGlobalShuffle() }
+                    } label: {
+                        Image(systemName: "shuffle")
+                    }
+                    .disabled(audioPlayer.isLoadingGlobalShuffle)
+                    .accessibilityLabel("Shuffle All Songs")
+                }
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
